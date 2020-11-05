@@ -1,0 +1,271 @@
+%%
+% This script enables us to demonstrate: 1) the ensemble of models can reach the predetermined 
+% steady-state fluxes with EM approach, 2) the control ensemble with parameters randomly sampled
+% can not reach the predetermined steady-state, 3) the reduction of kinetic parameter space using 
+% Principal Component Analysis (PCA), 4) how the ensemble of models that anchored to the same steady 
+% state behave after perturbations.
+% To run this script, four variables need to be declared in advance:
+% A.	Data structure ‘Net’: ‘Net’ holds the general information of metabolic network of interest 
+% such as stoichiometry, regulation information, thermodynamic properties, enzyme and metabolite names,
+% biomass production and predetermined stead-state flux distributions. The detail instruction of constructing 
+% ‘Net’ can be found in the Tutorial. An example of a simple toy model is used here. 
+% B.	‘testInitialEnsemble’: if you want to demonstrate point 1) and 2) as mentioned above, assign testInitialEnsemble=1,
+% else testInitialEnsemble=0. The default value is 1.
+% C.	‘testPCA’: if you want to demonstrate point 3) together with 1) and 2), assign testPCA=1 inaddition to 
+% testInitialEnsemble=1, else testPCA=0. The default value is 1.
+% D.	‘perturbation’: in order to observe how the ensemble of models that anchored to the same steady behave after 
+% introducing perturbations such as enzyme overexpression, assign perturbation=1 (testInitialEnsemble=0 and testPCA=0),
+% else perturbation=0. The default value is 0. Please adjust the perturbation accordingly, an overexpression of enzyme 
+% 1 by 2 fold is used as an example here.
+
+%Yikun Tan 
+%UCLA 
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%DO NOT TOUCH ANY OF THE BELOW CODE UNTIL INDICATED
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+clear
+%% Input the information
+load Net
+testInitialEnsemble=1;
+testPCA=1;
+perturbation=0;
+rand('twister',sum(100*clock))
+% Input the stoichiometric matrix along with required indices and fluxes
+S=Net.S;
+Sreg=Net.Sreg;
+Sbm=Net.Sbm;
+EnzName=Net.EnzName;
+MetabName=Net.MetabName;
+Vin_index=Net.Vin_index;
+Vout_index=Net.Vout_index;
+Vcof_index=Net.Vcof_index;
+% Input the thermodynamic constraints
+SGFEnergy=Net.SGFE;
+MetabRange=Net.MetabRange;
+% Rearrange reactions (reactions catalyzed by same enzyme can be
+% recognized)
+totalNetRxns=size(S,2);
+nin_=length(Vin_index);
+nout_=length(Vout_index);
+nInRxns=totalNetRxns-nin_-nout_;
+[newOrder,ind_]=sort(EnzName(1:nInRxns));
+S(:,1:nInRxns)=S(:,ind_);
+Sreg(:,1:nInRxns)=Sreg(:,ind_);
+EnzName(1:nInRxns)=newOrder;
+SGFEnergy(1:nInRxns)=SGFEnergy(ind_);
+[junk1,junk2,EnzID]=unique(EnzName(1:nInRxns));  %make sure no gap in EnzID
+tmp=length(junk1)+1:1:length(junk1)+nin_+nout_;
+EnzID=[EnzID;tmp'];
+% Calculate the range of free energies if it is required
+rt=1.987*298/1000;
+SGFEnergy=SGFEnergy/rt;
+negS=S;
+posS=S;
+posS(posS<0)=0;
+negS(negS>0)=0;
+lnQ_low=negS'*log(MetabRange(:,2))+posS'*log(MetabRange(:,1));
+lnQ_high=negS'*log(MetabRange(:,1))+posS'*log(MetabRange(:,2));
+FreeE_low=SGFEnergy+lnQ_low;
+FreeE_high=SGFEnergy+lnQ_high;
+% Get the S and A matrices for EM model
+[Asub,Aenz,Info_m]=getExpandedA(S,Sreg,Sbm,Vin_index,Vout_index,EnzID);
+[Spsub,Spenz]=getExpandedS(S,Sreg,Sbm,Vin_index,Vout_index,Info_m);
+% Parameters relating to the size of the network
+[nEnzComp_,nvuni]=size(Spenz);
+nMetab_=size(Asub,2);
+nPro_=size(Aenz,2);
+nKvec=size(Aenz,1);
+rVnet=Net.rVnet;
+rVnet(1:nInRxns,1)=Net.rVnet(ind_);
+rVnet_bm=Net.rVnet_bm;
+if exist('Net.realMetab','var')
+    realMetab=Net.realMetab;
+else
+    realMetab=ones(nMetab_,1);
+end
+clear negS posS v lnQ* ind_ junk1 junk2 newOrder rt
+
+% Calculate thermodynamic constraints
+FElow_new=FreeE_low;
+FEhigh_new=FreeE_high;
+for k=1:nInRxns
+    if FreeE_low(k)>0 && rVnet(k)>0
+        fprintf('\nThe direction of the reaction %i is opposite to the thermo constraint',k);
+    end
+    if FreeE_low(k)<0 && FreeE_high(k)>0
+        if rVnet(k)>0
+            FEhigh_new(k)=0;
+        else
+            FElow_new(k)=0;
+        end
+    end
+    if FreeE_high(k)<0 && rVnet(k)<0
+        fprintf('\nThe direction of the reaction %i is opposite to the thermo constraint',k);
+    end
+end
+%%
+Sp=[Spsub;Spenz];
+Ae_ode=[Asub,Aenz(:,1:nEnzComp_)];
+initmetab_=realMetab; %Number of Metabolites
+%clear Spsub Spenz FreeE_high FreeE_low MetabRange
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%DO NOT TOUCH ANY OF THE ABOVE CODE
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%CHANGE THE CODE BELOW ACCORDING TO YOUR SYSTEM
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Obtain an ensemble of models
+nmodels=500;  %THIS IS THE NUMBER OF MODELS IN YOUR ENSEMBLE
+fold = 1; % THIS IS THE FOLD CHANGE OF OVEREXPRESSION YOU WANT TO YOUR SYSTEM)
+V_out=Vout_index; %THIS IS YOUR PRODUCT FLUX
+V_in=Vin_index; %THIS IS YOUR GLUCOSE UPTAKE FLUX
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%Initial the saved variables
+CuteVnet_p=zeros(51,size(rVnet,1),nmodels);
+CuteConc_p=zeros(51,length(realMetab),nmodels);
+CuteKvec=zeros(nKvec,nmodels);
+Cutepro=zeros(nPro_,nmodels);
+nReg=length(find(Info_m(:,7)==8));
+nReg=nReg+2*length(find(Info_m(:,7)==6));
+nReg=nReg+length(find(Info_m(:,7)==4|Info_m(:,7)==5));
+Cutebinding_co=zeros(nReg,nmodels);
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Obtain ODE models with EM approach
+initialMetab1=2*rand(nMetab_,1).*realMetab; %Random assign the initial condition to test the initial ensemble, if cofactors are involved, make sure that the cofactor pools are unchanged
+initialMetab2=realMetab;
+nmodel=0;
+while nmodel<nmodels
+    Rref=samplingR(Info_m,FElow_new,FEhigh_new);
+    NormMetab=ones(length(realMetab),1);
+    [Kvec_raw,Econc,Tconc,rVuni,metab_,pro_,binding_co,ActRxnSplit]=getKineticPara_raw(rVnet,rVnet_bm,Info_m,Asub,Aenz,Rref,NormMetab,Sreg);
+    realEconc=ones(length(rVnet),1);
+    [Kvec,realPro_]=getKineticPara_abs(Info_m,Asub,Aenz,Kvec_raw,pro_,realMetab,realEconc);
+    maxtime=50;
+    step=1;
+    [vuni,vnet,conc,rate_,t,initial_,LHS_]=ElementaryRxnsODE_abs(Kvec,Econc,Tconc,realEconc,Sp,Ae_ode,Info_m,Vcof_index,initialMetab1,realPro_,maxtime,step); 
+    if max(abs(vnet(end,:)'-rVnet))<0.1
+        nmodel=nmodel+1
+        CuteKvec(:,nmodel)=Kvec;
+        Cutepro(:,nmodel)=realPro_;
+        if perturbation
+            Econc(1)=Econc(1)*2; %(e.g.overexpress enzyme 1 for 2 fold)
+            [vuni,vnet,conc,rate_,t,initial_,LHS_]=ElementaryRxnsODE_abs(Kvec,Econc,Tconc,realEconc,Sp,Ae_ode,Info_m,Vcof_index,initialMetab2,realPro_,maxtime,step);
+        end
+        CuteVnet_p(:,:,nmodel)=vnet;
+        CuteConc_p(:,:,nmodel)=conc(:,1:length(realMetab));
+        if ~isempty(binding_co)
+            Cutebinding_co(:,nmodel)=binding_co(:,2);
+        end
+    end
+end
+
+%Prepare Figure 1: both fluxes and metabolites are anchored to the same
+%steady state for EM approach
+temp=max(nMetab_,totalNetRxns);
+figure
+for m=1:nMetab_
+    subplot(2,temp,m)
+    for n=1:nmodel
+        plot(t,CuteConc_p(:,m,n)), hold on
+        hold all
+    end
+    title(MetabName(m)),
+    xlabel('time')
+end
+for m=1:totalNetRxns
+    subplot(2,temp,temp+m)
+    for n=1:nmodel
+        plot(t,CuteVnet_p(:,m,n)),hold on
+        hold all
+    end
+    ylim([rVnet(m)*0.8 rVnet(m)*1.2]);
+    title(EnzName(m)),
+    xlabel('time')
+end
+
+
+
+% Obtain ODE models with randomly sampled kinetics parameters (control
+% ensemble)
+if testInitialEnsemble
+    RandKvec=min(min(CuteKvec))+(max(max(CuteKvec))-min(min(CuteKvec)))*rand(size(CuteKvec));
+    for nmodel=1:nmodels
+        nmodel
+        [vuni,vnet,conc,rate_,t,initial_,LHS_]=ElementaryRxnsODE_abs(RandKvec(:,nmodel),Econc,Tconc,realEconc,Sp,Ae_ode,Info_m,Vcof_index,initialMetab1,realPro_,maxtime,step);
+        RandVnet(:,:,nmodel)=vnet;
+        RandConc(:,:,nmodel)=conc(:,1:length(realMetab));
+        if ~isempty(binding_co)
+            Cutebinding_co(:,nmodel)=binding_co(:,2);
+        end
+    end
+%Prepare Figure 2: Neither fluxes nor metabolites reach the same steady
+%state for control ensemble
+    figure
+    for m=1:nMetab_
+        subplot(2,temp,m)
+        for n=1:nmodel
+            plot(t,RandConc(:,m,n)), hold on
+            hold all
+        end
+        title(MetabName(m)),
+        xlabel('time')
+    end
+    for m=1:totalNetRxns
+        subplot(2,temp,temp+m)
+        for n=1:nmodel
+            plot(t,RandVnet(:,m,n)), hold on
+            hold all
+        end
+        ylim([0 1000]),
+        title(EnzName(m)),
+        xlabel('time')
+    end
+end
+%% Pricipal component analysis and comparision of kinetic parameter spaces
+% prepare Figure 3: Kinetic parameter space for EM approach Vs. randomly
+% sampling approach
+if testPCA && testInitialEnsemble
+    PCAMatrix1 = CuteKvec';
+    for i=size(PCAMatrix1,2):-1:1,
+        PCAMatrix1(:,i)=PCAMatrix1(:,i)./std(PCAMatrix1(:,i));
+        if PCAMatrix1(1,i)==0 || isnan(PCAMatrix1(1,i)) || PCAMatrix1(1,i)>10^10,
+            PCAMatrix1(:,i)=[];
+        end
+    end
+    PCAMatrix2 = RandKvec(1:size(PCAMatrix1,2),:)';
+    for i=size(PCAMatrix2,2):-1:1,
+        PCAMatrix2(:,i)=PCAMatrix2(:,i)./std(PCAMatrix1(:,i));
+        if PCAMatrix2(1,i)==0 || isnan(PCAMatrix2(1,i)) || isinf(PCAMatrix2(1,i)),
+            PCAMatrix2(:,i)=[];
+        end
+    end
+    [coefs1,scores1,variances1,t2] = princomp(PCAMatrix1);
+    AdjMatrix=ones(size(scores1,1),1)*mean(PCAMatrix2*coefs1);
+    scores2=PCAMatrix2*coefs1-AdjMatrix;
+    figure;
+    subplot(1,2,1)
+    plot3(scores1(:,1), scores1(:,2) ,scores1(:,3),'.','color','b');
+    xlim([-100 100]);
+    xlabel('P1');
+    ylim([-100 100]);
+    ylabel('P2');
+    zlim([-100 100]);
+    zlabel('P3');
+    title('With Steady-state flux constraint'),
+    subplot(1,2,2)
+    plot3(scores2(:,1), scores2(:,2) ,scores2(:,3),'.','color','r');
+%     xlim([-5000 5000]);
+    xlabel('P1');
+%     ylim([-5000 5000]);
+    ylabel('P2');
+%     zlim([-5000 5000]);
+    zlabel('P3');
+    title('Without Steady-state flux constraint'),
+end
+
+
+
+

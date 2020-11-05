@@ -1,0 +1,348 @@
+function [Asub,Aenz,Info_m]=getExpandedA(S,Sreg,Sbm,Vin_index,Vout_index,EnzID)
+
+%Converts the stoichiometric coefficient matrix of overall reactions (S)
+%and the stoichiometric biomass matrix (Sbm) into the corresponding A matrix
+%of elementary reactions.  The transporters corresponding to the input and 
+%output must be last columns in S.  The influx is modeled as reversible, 
+%while the outflux(es) is(are) irreversible.
+%
+%Info_m is the housekeeping matrix providing the following information for 
+%each reaction:
+%  Column 1: index of the reaction
+%  Column 2: index of the free enzyme catalyzing the reaction
+%  Columns 3 & 4: start and end indices in Vuni corresponding to that reaction's
+%                 elementary reactions
+%  Columns 5 & 6: start and end indices of the enzyme complexes for that reaction
+%  Column 7: category of the reaction:(1)Intracellular rxn;(2)Transport in;
+%           (3)Transport out;(4-6)Ihibition Regulation;(7)Biomass
+%           (8)Activation Regulation (9) Activated (10) Active-Form
+%
+%-------------------------------
+%Linh Tran, UCLA
+%Matthew Rizk, UCLA
+%Yikun Tan, UCLA
+%Last revision Jan 13, 2010
+%-------------------------------
+
+[nMetab,nNetRxns]=size(S);
+
+if isempty(EnzID)  %no input for indices of enzymes catalyzing the rxns
+    EnzID=[1:1:nNetRxns]';  %different enzyme catalyzes different rxn
+end
+
+nin_=length(Vin_index);
+nout_=length(Vout_index);
+nInterRxns=nNetRxns-nin_-nout_;
+nRevRxns=nInterRxns+nin_;
+totalRevEnz=length(unique(EnzID(1:nRevRxns)));
+nRxns=nNetRxns;
+
+vtmp=find(S>0); %find index of products in S
+Spro=zeros(nMetab,nNetRxns); %create S matrix for products only
+Spro(vtmp)=S(vtmp);
+
+vtmp=find(S<0);
+Ssub=zeros(nMetab,nNetRxns);
+Ssub(vtmp)=S(vtmp);
+
+vnsub=sum(Ssub); %get total number of substrates in each reaction.
+vnpro=sum(Spro); %get total number of products in each reaction.
+rcount=1;
+ccount=totalRevEnz+1;
+Aenz=[];
+Asub=[];
+
+vtmp=find(Sbm>0);
+Sbmpro=zeros(size(Sbm));
+Sbmpro(vtmp)=Sbm(vtmp);
+
+vtmp=find(Sbm<0);
+Sbmsub=zeros(size(Sbm));
+Sbmsub(vtmp)=Sbm(vtmp);
+
+vnbmsub=sum(Sbmsub);
+vnbmpro=sum(Sbmpro);
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%INTERNAL REACTIONS
+
+for k=1:nInterRxns
+    TypeOfRxn = 1;
+    if(~isempty(find(Sreg(:,k)==-4)))
+       TypeOfRxn = 9; %Make sure reaction is not activated
+    end
+    
+    Info_m(k,[1:2 3 5 7])=[k,EnzID(k),rcount,ccount,TypeOfRxn];
+    if vnsub(k)==-2 & vnpro(k)==2
+        %two substrates and two products: 4 steps, 4 enzyme complexes, and 8 Vuni
+        blockAsub=zeros(8,nMetab);
+        subID=getExpandedIndices(Ssub(:,k));
+        blockAsub(1,subID(1))=1;
+        blockAsub(3,subID(2))=1;
+        proID=getExpandedIndices(Spro(:,k));
+        blockAsub(6,proID(1))=1;
+        blockAsub(8,proID(2))=1;
+        blockAenz=zeros(8,4);
+        blockAenz([1 8],1)=1;
+        blockAenz(2:3,2)=1;
+        blockAenz(4:5,3)=1;
+        blockAenz(6:7,4)=1;
+    else
+        blockAenz=zeros(6,3);
+        blockAenz([1 6],1)=1;
+        blockAenz(2:3,2)=1;
+        blockAenz(4:5,3)=1;
+        blockAsub=zeros(6,nMetab);
+        subID=getExpandedIndices(Ssub(:,k));
+        if vnsub(k)==-2 & vnpro(k)==1
+            %2 substrates and 1 product: 3 steps, 3 enzyme complexes, and 6 Vuni
+            blockAsub(1,subID(1))=1;
+            blockAsub(3,subID(2))=1;
+            proID=getExpandedIndices(Spro(:,k));
+            blockAsub(6,proID)=1;
+        else  %1 substrate
+            blockAsub(1,subID)=1;
+            proID=getExpandedIndices(Spro(:,k));
+            if vnpro(k)==1  %with 1 product
+                blockAsub(6,proID)=1;
+            else            %with 2 products
+                blockAsub(4,proID(1))=1;
+                blockAsub(6,proID(2))=1;
+            end
+        end
+    end
+    if vnsub(k)==-2 & vnpro(k)==3
+        %two substrates and three products: 5 steps, 5 enzyme complexes, and 10 Vuni
+        blockAsub=zeros(10,nMetab);
+        subID=getExpandedIndices(Ssub(:,k));
+        blockAsub(1,subID(1))=1;
+        blockAsub(3,subID(2))=1;
+        proID=getExpandedIndices(Spro(:,k));
+        blockAsub(6,proID(1))=1;
+        blockAsub(8,proID(2))=1;
+        blockAsub(10,proID(3))=1;
+        blockAenz=zeros(10,5);
+        blockAenz([1 10],1)=1;
+        blockAenz(2:3,2)=1;
+        blockAenz(4:5,3)=1;
+        blockAenz(6:7,4)=1;
+        blockAenz(8:9,5)=1;
+    end
+
+    if vnsub(k)<-2 || vnpro(k)>3
+        error('\nThe program limits to maximum of 2 reactants and 3 products per reaction\n');
+    end
+
+    Asub=[Asub;blockAsub];
+    [nr,ne]=size(blockAenz);
+    Aenz(rcount:rcount+nr-1,EnzID(k))=blockAenz(:,1);
+    Aenz(rcount:rcount+nr-1,ccount:ccount+ne-2)=blockAenz(:,2:ne);
+    rcount=rcount+nr;
+    ccount=ccount+ne-1;
+    Info_m(k,[4 6])=[rcount-1,ccount-1];
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%UPTAKE REACTIONS
+
+for k=1:nin_
+    Info_m(k+nInterRxns,[1:2 3 5 7])=[k+nInterRxns,EnzID(k+nInterRxns),rcount,ccount,2]; 
+    blockAsub=zeros(6,nMetab);
+    subID=getExpandedIndices(Ssub(:,Vin_index(k)));
+    blockAsub(1,subID)=1;
+    proID=getExpandedIndices(Spro(:,Vin_index(k)));
+    if vnpro(Vin_index(k))==1   %1 substrate
+        blockAsub(6,proID)=1;
+    else                        %2 substrates
+        blockAsub(4,proID(1))=1;
+        blockAsub(6,proID(2))=1;                
+    end
+    blockAenz=zeros(6,3);
+    blockAenz([1 6],1)=1;
+    blockAenz(2:3,2)=1; 
+    blockAenz(4:5,3)=1;
+    Asub=[Asub;blockAsub];
+    [nr,ne]=size(blockAenz);
+    Aenz(rcount:rcount+nr-1,EnzID(Vin_index(k)))=blockAenz(:,1);
+    Aenz(rcount:rcount+nr-1,ccount:ccount+ne-2)=blockAenz(:,2:ne);
+    rcount=rcount+nr;
+    ccount=ccount+ne-1;
+    Info_m(k+nInterRxns,[4 6])=[rcount-1,ccount-1];    
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%OUTPUT REACTIONS
+
+Aenz_out=[zeros(rcount-1,nout_);eye(nout_)];  %corresponding to transporters out
+for k=1:length(Vout_index)
+    Info_m(k+nRevRxns,[1:2 3:4 7])=[k+nRevRxns,EnzID(k+nRevRxns),rcount,rcount,3];
+    subID=find(Ssub(:,Vout_index(k)));
+    blockAsub=zeros(1,nMetab);  %assume both ref and target state have the same concentration of pathway substrate(s)
+    blockAsub(1,subID)=1;   
+    blockAsub(1,subID)=1;   
+    Asub=[Asub;blockAsub];
+    Aenz=[Aenz;zeros(1,ccount-1)]; %blockAenz=zeros(1,ccount-1);  %only add row for Vuni, but no column for enzyme
+    rcount=rcount+1;  %only one elementary reaction, Vuni=Vout      
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%BIOMASS REACTION
+
+if ~isempty(Sbm)
+    [rowInfo,colInfo]=size(Info_m);
+    Info_m(rowInfo+1,[1:2 3:4 7])=[max(Info_m(:,1))+1,max(EnzID)+1,rcount,rcount,7];
+    subID=find(Sbmsub(:,1));
+    blockAsub=zeros(1,nMetab);
+    blockAsub(1,subID)=1;
+    Asub=[Asub;blockAsub];
+    Aenz=[Aenz;zeros(1,ccount-1)];
+    Aenz_out=[Aenz_out;zeros(1,nout_)];
+    rcount=rcount+1;  %only one Vuni=Vout
+    nRxns=nRxns+1;
+end
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%REGULATION REACTIONS
+
+if ~isempty(Sreg)
+    [xreg,yreg]=find(Sreg<0);
+    vtmp=find(Sreg<0);
+    for j=1:length(vtmp)
+        nNormalEnz=ccount-1;
+        if Sreg(vtmp(j))==-1
+            %competitive inhibition:  1 step, 1 enzyme complex, and 2 Vuni
+            Info_m(j+nRxns,[1:2 3 5 7])=[yreg(j),EnzID(yreg(j)),rcount,ccount,4];
+            blockAregsub=zeros(2,nMetab);
+            blockAregsub(1,xreg(j))=1;           
+            blockAregenz1=zeros(2,nNormalEnz);
+            blockAregenz1(1,Info_m(yreg(j),2))=1;
+            blockAregenz2=zeros(2,1);
+            blockAregenz2(2,1)=1;            
+        elseif Sreg(vtmp(j))==-2
+            %uncompetitive inhibition:  1 step, 1 enzyme complex, and 2 Vuni
+            Info_m(j+nRxns,[1:2 3 5 7])=[yreg(j),EnzID(yreg(j)),rcount,ccount,5];
+            blockAregsub=zeros(2,nMetab);
+            blockAregsub(1,xreg(j))=1;
+            blockAregenz1=zeros(2,nNormalEnz);
+            blockAregenz1(1,Info_m(yreg(j),5))=1;
+            blockAregenz2=zeros(2,1);
+            blockAregenz2(2,1)=1;            
+        elseif Sreg(vtmp(j))==-3
+            %mixed inhibition:  2 steps, 2 enzyme complexes, and 4 Vuni
+            Info_m(j+nRxns,[1:2 3 5 7])=[yreg(j),EnzID(yreg(j)),rcount,ccount,6];
+            blockAregsub=zeros(4,nMetab);
+            blockAregsub([1 3],xreg(j))=1;
+            blockAregenz1=zeros(4,nNormalEnz);
+            blockAregenz1(1,Info_m(yreg(j),2))=1;
+            blockAregenz1(3,Info_m(yreg(j),5))=1;
+            blockAregenz2=zeros(4,2);
+            blockAregenz2(2,1)=1; 
+            blockAregenz2(4,2)=1;
+        elseif Sreg(vtmp(j))==-4
+            %activation:  1 step ligand binding 2 vuni + # of internal reactions
+            %being activated
+            Info_m(j+nRxns,[1:2 3 4 5 6 7])=[yreg(j),EnzID(yreg(j)),rcount,rcount+1,ccount,ccount,8];
+            nRxns = nRxns+1;
+            Info_m(j+nRxns,[1:2 3 5 7])=[yreg(j),EnzID(yreg(j)),rcount+2,ccount+1,10];
+            k=yreg(j);
+            if vnsub(k)==-2 & vnpro(k)==2
+                %the reaction has two substrates and two products: 4 steps, 4 enzyme
+                %complexes, and 8 Vuni
+                blockAregsub=zeros(10,nMetab);
+                blockAregsub(1,xreg(j))=1;
+                subID=getExpandedIndices(Ssub(:,k));
+                blockAregsub(3,subID(1))=1;
+                blockAregsub(5,subID(2))=1;
+                proID=getExpandedIndices(Spro(:,k));
+                blockAregsub(8,proID(1))=1;
+                blockAregsub(10,proID(2))=1;
+                blockAregenz1=zeros(10,nNormalEnz);
+                blockAregenz1(1,Info_m(yreg(j),2))=1;
+                blockAregenz2=zeros(10,4);
+                blockAregenz2([2 3 10],1)=1;
+                blockAregenz2(4:5,2)=1;
+                blockAregenz2(6:7,3)=1;
+                blockAregenz2(8:9,4)=1;
+            else
+                blockAregenz1=zeros(8,nNormalEnz);
+                blockAregenz1(1,Info_m(yreg(j),2))=1;
+                blockAregenz2=zeros(8,3);
+                blockAregenz2([2 3 8],1)=1;
+                blockAregenz2(4:5,2)=1;
+                blockAregenz2(6:7,3)=1;
+                blockAregsub=zeros(8,nMetab);
+                subID=getExpandedIndices(Ssub(:,k));
+                if vnsub(k)==-2 & vnpro(k)==1
+                    %2 substrates and 1 product: 3 steps, 3 enzyme complexes, and 6 Vuni
+                    blockAregsub(1,xreg(j))=1;
+                    blockAregsub(3,subID(1))=1;
+                    blockAregsub(5,subID(2))=1;
+                    proID=getExpandedIndices(Spro(:,k));
+                    blockAregsub(8,proID)=1;
+                else  %1 substrate
+                    blockAregsub(1,xreg(j))=1;
+                    blockAregsub(3,subID)=1;
+                    proID=getExpandedIndices(Spro(:,k));
+                    if vnpro(k)==1  %with 1 product
+                        blockAregsub(8,proID)=1;
+                    else            %with 2 products
+                        blockAregsub(6,proID(1))=1;
+                        blockAregsub(8,proID(2))=1;
+                    end
+                end
+            end
+            if vnsub(k)==-2 & vnpro(k)==3
+                %two substrates and three products: 5 steps, 5 enzyme complexes, and 10 Vuni
+                blockAregsub=zeros(12,nMetab);
+                subID=getExpandedIndices(Ssub(:,k));
+                blockAregsub(1,xreg(j))=1;
+                blockAregsub(3,subID(1))=1;
+                blockAregsub(5,subID(2))=1;
+                proID=getExpandedIndices(Spro(:,k));
+                blockAregsub(8,proID(1))=1;
+                blockAregsub(10,proID(2))=1;
+                blockAregsub(12,proID(3))=1;
+                blockAregenz1=zeros(12,nNormalEnz);
+                blockAregenz1(1,Info_m(yreg(j),2))=1;
+                blockAregenz2=zeros(12,5);
+                blockAregenz2([2 3 12],1)=1;
+                blockAregenz2(4:5,2)=1;
+                blockAregenz2(6:7,3)=1;
+                blockAregenz2(8:9,4)=1;
+                blockAregenz2(10:11,5)=1;
+            end
+
+        else
+            error('\nThe program only accepts inhibition labeled with -1 or -2 or -3 or -4\n');
+        end
+        Asub=[Asub;blockAregsub];
+        Aenz=[Aenz;blockAregenz1];
+        [nr2,ne2]=size(blockAregenz2);
+        Aenz(rcount:rcount+nr2-1,ccount:ccount+ne2-1)=blockAregenz2;
+        Aenz_out=[Aenz_out;zeros(nr2,nout_)];
+        rcount=rcount+nr2;
+        ccount=ccount+ne2;
+        Info_m(j+nRxns,[4 6])=[rcount-1,ccount-1];
+    end
+end
+
+%stack the block corresponding to outflux transporters at the end
+Aenz=[Aenz,Aenz_out];  
+Info_m(nRevRxns+1:nRevRxns+nout_,5:6)=repmat([ccount:1:ccount+nout_-1],2,1)';   
+if ~isempty(Sbm)
+    Info_m(nRevRxns+nout_+1,5:6)=repmat([ccount+nout_],2,1)';
+end
+           
+%------------------------------------------------------
+function v_ind=getExpandedIndices(v_input)
+
+n=length(v_input);
+v_input=abs(v_input);
+v_ind=[];
+for k=1:n
+    if v_input(k)==1
+        v_ind=[v_ind;k];
+    elseif v_input(k)>1
+        v_ind=[v_ind;repmat(k,v_input(k),1)];
+    end
+end

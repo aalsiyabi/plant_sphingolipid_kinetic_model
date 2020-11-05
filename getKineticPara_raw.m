@@ -1,0 +1,159 @@
+function [Kvec,Econc,Tconc,rVuni,Metab_,Pro_,binding_co, ActRxnSplit]=getKineticPara_raw(rVnet,rVnet_bm,Info_m,Asub,Aenz,Rref,ssmetab_,Sreg)
+
+%Calculate kinetic parameters and enzyme fraction concentrations.
+%
+%-------------------------------
+%Linh Tran, UCLA
+%Matthew Rizk, UCLA
+%Yikun Tan, UCLA
+%Last revision Jan 14, 2010
+%-------------------------------
+
+thres_=1;  %ratio between binding reactions of inhibitor and substrate to enzyme
+
+nMetab_=size(Asub,2);
+nPro_=size(Aenz,2);
+totalRxns=size(Info_m,1);
+nvuni_=Info_m(totalRxns,4);
+nin_=length(find(Info_m(:,7)==2));
+nout_=length(find(Info_m(:,7)==3));
+nbm_=length(find(Info_m(:,7)==7));
+nInterRxns=length(find(Info_m(:,7)==1|Info_m(:,7)==9));
+nRevRxns=nInterRxns+nin_;
+Metab_= ssmetab_; 
+Pro_=rand(nPro_,1);  
+nRevEnz=max(Info_m(1:nRevRxns,2));
+
+for k=1:nRevEnz
+    vrxns=find(Info_m(:,2)==k);
+    ind_tmp=k;
+    for kk=1:length(vrxns)
+        if Info_m(vrxns(kk),7)~=3 && Info_m(vrxns(kk),7)~=7  %not an outflux or biomass reaction
+            ind_tmp=[ind_tmp,Info_m(vrxns(kk),5):1:Info_m(vrxns(kk),6)];
+        end
+    end
+    tmp_nor=Pro_(ind_tmp,1)./sum(Pro_(ind_tmp,1));
+    Pro_(ind_tmp,1)=tmp_nor;    
+end
+
+TransOut=find(Info_m(:,7)==3);
+Pro_(Info_m(TransOut,5))=1;
+BMrxn=find(Info_m(:,7)==7);
+
+Subterm=[Asub Aenz]*log([Metab_;Pro_]);  %in log form
+
+rVuni=zeros(nvuni_,1);
+Econc=ones(nRevEnz-nin_,1);
+Tconc=ones(nin_+nout_,1);
+Kvec=zeros(nvuni_,1);
+
+
+%Reversible reactions (internal and uptake reactions)
+
+%Split ratio caculation for activation reactions
+ActRxnSplit = []; %[RnxIndex, split ratio for rxn]
+for i=1:nRevRxns
+    CurrentVnetFrac = 1;
+    if Info_m(i,7)== 9    %Normal Activated
+       [RxnIndTemp,b]=find(Sreg(:,Info_m(i,1))==-4);
+       alpha_act = rand(length(RxnIndTemp)+1);
+       alpha_act = alpha_act/sum(alpha_act);
+       for l=2:length(RxnIndTemp)+1
+           ActRxnSplit=[ActRxnSplit;[Info_m(i,1),alpha_act(l)]];
+       end
+       CurrentVnetFrac = alpha_act(1);
+    end
+    
+    nsteps_=0.5*(Info_m(i,4)-Info_m(i,3)+1);
+    stepInd=0.5*(Info_m(i,3)+1):1:0.5*Info_m(i,4);
+    for j=1:nsteps_
+        rtmp=Rref(stepInd(j),1);
+        if rtmp==1 || rVnet(i,1)==0
+            rVuni(Info_m(i,3)+2*j-2,1)=rVuni(Info_m(i,3)+2*j-3,1);                                    
+        else            
+            rVuni(Info_m(i,3)+2*j-2,1)=rVnet(i,1)*CurrentVnetFrac/(1-rtmp.^sign(rVnet(i,1)));
+            rVuni(Info_m(i,3)+2*j-1,1)=-rVnet(i,1)*CurrentVnetFrac+rVuni(Info_m(i,3)+2*j-2,1);
+        end
+        Kvec(Info_m(i,3)+2*j-2,1)=rVuni(Info_m(i,3)+2*j-2,1)/exp(Subterm(Info_m(i,3)+2*j-2,1));
+        Kvec(Info_m(i,3)+2*j-1,1)=rVuni(Info_m(i,3)+2*j-1,1)/exp(Subterm(Info_m(i,3)+2*j-1,1));            
+    end        
+end
+
+%Irreversible product output reactions
+for i=1:length(TransOut)
+    rVuni(Info_m(TransOut(i),3),1)=rVnet(TransOut(i),1); 
+    Kvec(Info_m(TransOut(i),3),1)=rVuni(Info_m(TransOut(i),3),1);
+end
+
+%Biomass reaction
+if ~isempty(BMrxn)
+    rVuni(Info_m(BMrxn,3),1)=rVnet_bm; 
+    Kvec(Info_m(BMrxn,3),1)=rVuni(Info_m(BMrxn,3),1);
+end
+eout=nRevRxns+nout_+nbm_;
+
+%Regulation reactions
+binding_co=[];
+Turn=0;
+if eout<totalRxns
+    for i=eout+1:1:totalRxns
+        regRxn=Info_m(i,1);
+        if Info_m(i,7)==4  %Competitive Inhibition
+            alpha_=thres_*rand;
+            tmp_f=alpha_*rVuni(Info_m(regRxn,3),1);
+            rVuni(Info_m(i,3),1)=tmp_f;
+            rVuni(Info_m(i,4),1)=tmp_f;
+            Kvec(Info_m(i,3),1)=tmp_f/exp(Subterm(Info_m(i,3),1)); 
+            Kvec(Info_m(i,4),1)=tmp_f/exp(Subterm(Info_m(i,4),1));
+            binding_co=[binding_co;[regRxn,alpha_,4]];
+        elseif Info_m(i,7)==5 %Uncompetitive Inhibition
+            alpha_=thres_*rand;
+            tmp_f=alpha_*rVuni(Info_m(regRxn,3)+2,1);
+            rVuni(Info_m(i,3),1)=tmp_f;
+            rVuni(Info_m(i,4),1)=tmp_f;
+            Kvec(Info_m(i,3),1)=tmp_f/exp(Subterm(Info_m(i,3),1)); 
+            Kvec(Info_m(i,4),1)=tmp_f/exp(Subterm(Info_m(i,4),1));
+            binding_co=[binding_co;[regRxn,alpha_,5]];
+        elseif Info_m(i,7)==6 %Mixed Inhibition
+            alpha_=thres_*rand(2,1);
+            tmp_f=alpha_.*rVuni([Info_m(regRxn,3);Info_m(regRxn,3)+2],1);
+            rVuni(Info_m(i,3),1)=tmp_f(1);
+            rVuni(Info_m(i,3)+1,1)=tmp_f(1);
+            rVuni(Info_m(i,3)+2,1)=tmp_f(2);
+            rVuni(Info_m(i,3)+3,1)=tmp_f(2);
+            Kvec(Info_m(i,3),1)=tmp_f(1)/exp(Subterm(Info_m(i,3),1)); 
+            Kvec(Info_m(i,3)+1,1)=tmp_f(1)/exp(Subterm(Info_m(i,3)+1,1)); 
+            Kvec(Info_m(i,3)+2,1)=tmp_f(2)/exp(Subterm(Info_m(i,3)+2,1)); 
+            Kvec(Info_m(i,3)+3,1)=tmp_f(2)/exp(Subterm(Info_m(i,3)+3,1));
+            binding_co=[binding_co;[regRxn,alpha_(1),6]];
+            binding_co=[binding_co;[regRxn,alpha_(2),6]];
+        elseif Info_m(i,7)==8               %Activation binding
+            alpha_=thres_*rand;
+            tmp_f=alpha_*rVuni(Info_m(regRxn,3),1);
+            rVuni(Info_m(i,3),1)=tmp_f;
+            rVuni(Info_m(i,4),1)=tmp_f;
+            Kvec(Info_m(i,3),1)=tmp_f/exp(Subterm(Info_m(i,3),1)); 
+            Kvec(Info_m(i,4),1)=tmp_f/exp(Subterm(Info_m(i,4),1));
+            binding_co=[binding_co;[regRxn,alpha_,8]];
+        elseif Info_m(i,7)==10               %Activated version
+            Turn = Turn+1; 
+            CurrentVnetFrac=ActRxnSplit(Turn,2);
+            nsteps_=0.5*(Info_m(i,4)-Info_m(i,3)+1);
+            count_temp=0.5*(Info_m(i,3)+1+nout_+nbm_);
+            stepInd=count_temp:count_temp+nsteps_-1;
+            for j=1:nsteps_
+               rtmp=Rref(stepInd(j),1);
+               if rtmp==1 || rVnet(Info_m(i,1),1)==0
+                   rVuni(Info_m(i,3)+2*j-2,1)=rVuni(Info_m(i,3)+2*j-3,1);                                      %CHECK THIS!!!!!!!!!
+               else 
+                   RxnID=Info_m(i,1);
+                   rVuni(Info_m(i,3)+2*j-2,1)=rVnet(RxnID,1)*CurrentVnetFrac/(1-rtmp.^sign(rVnet(RxnID,1)));
+                   rVuni(Info_m(i,3)+2*j-1,1)=-rVnet(RxnID,1)*CurrentVnetFrac+rVuni(Info_m(i,3)+2*j-2,1);
+               end
+               Kvec(Info_m(i,3)+2*j-2,1)=rVuni(Info_m(i,3)+2*j-2,1)/exp(Subterm(Info_m(i,3)+2*j-2,1));
+               Kvec(Info_m(i,3)+2*j-1,1)=rVuni(Info_m(i,3)+2*j-1,1)/exp(Subterm(Info_m(i,3)+2*j-1,1));            
+            end        
+        end
+           
+    end
+end
